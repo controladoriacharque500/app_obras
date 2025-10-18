@@ -221,22 +221,26 @@ def main():
     st.title("🚧 Sistema de Gerenciamento de Obras")
     st.markdown("---")
 
+    # 1. Obter o cliente Gspread (cacheado)
     gc = get_gspread_client()
 
     if not gc:
         st.stop() # Parar se a autenticação falhar
 
-    # Recarrega os dados a cada execução/interação
-    df_info, df_despesas = load_data(gc)
+    # 2. Recarrega os dados a cada execução/interação
+    # CORREÇÃO CRÍTICA: CHAMAR load_data SEM PARÂMETROS!
+    df_info, df_despesas = load_data() 
 
     # Layout de colunas para as páginas de ação
     col_cadastro, col_registro = st.columns(2)
 
     with col_cadastro:
-        show_cadastro_obra(gc)
+        # gc é necessário aqui para a ESCRITA, então ele é passado para show_cadastro_obra
+        show_cadastro_obra(gc) 
 
     with col_registro:
-        show_registro_despesa(gc, df_info, df_despesas)
+        # gc é necessário aqui para a ESCRITA, então ele é passado para show_registro_despesa
+        show_registro_despesa(gc, df_info, df_despesas) 
 
     st.markdown("---")
     show_consulta_dados(df_info, df_despesas)
