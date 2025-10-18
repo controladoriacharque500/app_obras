@@ -194,10 +194,23 @@ def show_consulta_dados(df_info, df_despesas):
         st.info("Nenhuma obra cadastrada para consultar.")
         return
 
-    # 1. Agrega o gasto total por obra
-    gastos_totais = df_despesas.groupby('Obra_ID')['Gasto_Semana'].sum().reset_index()
-    gastos_totais.rename(columns={'Gasto_Semana': 'Gasto_Total_Acumulado'}, inplace=True)
-    
+    # 1. Agrega o gasto total por obra de forma segura
+    if not df_despesas.empty and 'Obra_ID' in df_despesas.columns and 'Gasto_Semana' in df_despesas.columns:
+        # Garante que a coluna Gasto_Semana é numérica (o load_data já tenta fazer isso, mas esta é uma segurança extra)
+        df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce').fillna(0)
+        
+        # Tenta a agregação
+        try:
+            gastos_totais = df_despesas.groupby('Obra_ID')['Gasto_Semana'].sum().reset_index()
+            gastos_totais.rename(columns={'Gasto_Semana': 'Gasto_Total_Acumulado'}, inplace=True)
+        except Exception as e:
+            # Caso o groupby falhe (ex: tipos mistos), cria um DataFrame vazio de gastos
+            st.error(f"Erro na agregação de gastos. Detalhe: {e}")
+            gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
+    else:
+        # Cria um DataFrame de gastos zerado se o df_despesas estiver vazio ou sem as colunas chave
+        gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
+
     # 2. Junta as informações de obras com os gastos
     df_final = df_info.merge(gastos_totais, on='Obra_ID', how='left').fillna(0)
     
@@ -206,9 +219,10 @@ def show_consulta_dados(df_info, df_despesas):
     df_final['Sobrando_Financeiro'] = df_final['Valor_Total_Inicial'] - df_final['Gasto_Total_Acumulado']
     
     # 4. Formatação para exibição
+    # ... (o restante da sua formatação de exibição) ...
     def formatar_moeda(x):
         return f"R$ {x:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
-        
+
     df_display = df_final[[
         'Obra_ID',
         'Nome_Obra',
@@ -217,11 +231,11 @@ def show_consulta_dados(df_info, df_despesas):
         'Sobrando_Financeiro',
         'Data_Inicio'
     ]].copy()
-    
+
     df_display['Valor_Total_Inicial'] = df_display['Valor_Total_Inicial'].apply(formatar_moeda)
     df_display['Gasto_Total_Acumulado'] = df_display['Gasto_Total_Acumulado'].apply(formatar_moeda)
     df_display['Sobrando_Financeiro'] = df_display['Sobrando_Financeiro'].apply(formatar_moeda)
-    
+
     st.dataframe(df_display, use_container_width=True)
 
 
@@ -254,6 +268,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
