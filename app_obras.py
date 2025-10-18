@@ -39,8 +39,9 @@ def get_gspread_client():
 
 # Limpar o cache a cada 10 minutos (600s)
 @st.cache_data(ttl=600)
-def load_data(gc):
+def load_data():
     """Carrega dados de ambas as abas e retorna dois DataFrames."""
+    gc = get_gspread_client()
     if not gc:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -242,3 +243,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
