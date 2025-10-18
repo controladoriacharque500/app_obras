@@ -101,24 +101,26 @@ def insert_new_despesa(gc, data):
         st.error(f"Erro ao registrar despesa: {e}")
 
 
-# --- Interface do Usuário (Streamlit) ---
-
 def show_cadastro_obra(gc):
     st.header("1. Cadastrar Nova Obra")
-    # CORREÇÃO: load_data é chamado SEM gc para evitar UnhashableParamError
-    df_info, _ = load_data() 
+    df_info, _ = load_data()
 
-    # Gera o próximo ID
+    # Gera o próximo ID de forma mais segura
     next_id = 1
-    if not df_info.empty:
+    if not df_info.empty and 'Obra_ID' in df_info.columns:
         try:
-            next_id = df_info['Obra_ID'].astype(int).max() + 1
-        except:
-             next_id = len(df_info) + 1
-             
+            # Tenta pegar o máximo ID, se a coluna for limpa e numérica
+            max_id = df_info['Obra_ID'].astype(str).str.replace(r'[^0-9]', '', regex=True).astype(int).max()
+            next_id = max_id + 1
+        except Exception as e:
+            # Se a limpeza falhar, apenas usa a contagem de linhas
+            next_id = len(df_info) + 1
+    
     next_id_str = str(next_id).zfill(3)
     st.info(f"O próximo ID da Obra será: **{next_id_str}**")
-    
+
+    # ... (o restante da função com o formulário de cadastro) ...
+
     with st.form("form_obra"):
         nome = st.text_input("Nome da Obra", placeholder="Ex: Casa Alpha")
         valor = st.number_input("Valor Total Inicial (R$)", min_value=0.0, format="%.2f")
@@ -242,4 +244,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
