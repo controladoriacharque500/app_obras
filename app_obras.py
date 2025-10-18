@@ -37,8 +37,6 @@ def get_gspread_client():
 
 # --- Funções de Leitura de Dados (Banco de Dados) ---
 
-# --- Funções de Leitura de Dados (Banco de Dados) ---
-# Adicionado tratamento para int64/float64 na limpeza
 @st.cache_data(ttl=600)
 def load_data():
     """Carrega dados de ambas as abas e retorna dois DataFrames."""
@@ -59,17 +57,23 @@ def load_data():
         aba_despesas = planilha.worksheet(ABA_DESPESAS)
         df_despesas = pd.DataFrame(aba_despesas.get_all_records())
 
-        # 3. Limpeza e Conversão de Tipos
+        # 3. Limpeza e Conversão de Tipos (Checa se a coluna existe antes de tentar converter)
         if not df_info.empty:
-            df_info['Obra_ID'] = df_info['Obra_ID'].astype(str)
-            df_info['Valor_Total_Inicial'] = pd.to_numeric(df_info['Valor_Total_Inicial'], errors='coerce')
-            df_info['Data_Inicio'] = pd.to_datetime(df_info['Data_Inicio'], errors='coerce')
+            if 'Obra_ID' in df_info.columns:
+                 df_info['Obra_ID'] = df_info['Obra_ID'].astype(str)
+            if 'Valor_Total_Inicial' in df_info.columns:
+                 df_info['Valor_Total_Inicial'] = pd.to_numeric(df_info['Valor_Total_Inicial'], errors='coerce')
+            if 'Data_Inicio' in df_info.columns:
+                 df_info['Data_Inicio'] = pd.to_datetime(df_info['Data_Inicio'], errors='coerce')
 
         if not df_despesas.empty:
-            df_despesas['Obra_ID'] = df_despesas['Obra_ID'].astype(str)
-            df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce')
-            # Garante que Semana_Ref é int nativo
-            df_despesas['Semana_Ref'] = pd.to_numeric(df_despesas['Semana_Ref'], errors='coerce').fillna(0).astype(int)
+            if 'Obra_ID' in df_despesas.columns:
+                 df_despesas['Obra_ID'] = df_despesas['Obra_ID'].astype(str)
+            if 'Gasto_Semana' in df_despesas.columns:
+                 df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce')
+            if 'Semana_Ref' in df_despesas.columns:
+                 # Garante que Semana_Ref é int nativo
+                 df_despesas['Semana_Ref'] = pd.to_numeric(df_despesas['Semana_Ref'], errors='coerce').fillna(0).astype(int)
 
         return df_info, df_despesas
 
@@ -97,7 +101,7 @@ def insert_new_despesa(gc, data):
         planilha = gc.open(PLANILHA_NOME)
         aba_despesas = planilha.worksheet(ABA_DESPESAS)
         
-        # CORREÇÃO: Converter todos os elementos para tipos nativos antes de enviar
+        # CORREÇÃO DE SERIALIZAÇÃO: Converter todos os elementos para tipos nativos antes de enviar
         data_nativa = [str(data[0]), int(data[1]), data[2], float(data[3])]
 
         aba_despesas.append_row(data_nativa)
@@ -131,7 +135,7 @@ def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
             return
 
         # 3. Criar os novos dados da linha (na ordem das colunas do Sheets)
-        # CORREÇÃO: Converte valores numéricos para tipos nativos
+        # CORREÇÃO DE SERIALIZAÇÃO: Converte valores numéricos para tipos nativos
         new_row_data = [
             str(obra_id),
             int(semana_ref), # Garante que é int nativo
@@ -148,10 +152,6 @@ def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
         
     except Exception as e:
         st.error(f"Erro ao atualizar despesa: {e}. Verifique se os valores numéricos são válidos.")
-
-# --- O RESTANTE DO CÓDIGO PERMANECE O MESMO ---
-# (show_cadastro_obra, show_registro_despesa, show_consulta_dados e main)
-
 
 # --- Interface do Usuário (Streamlit) ---
 
@@ -205,8 +205,12 @@ def show_registro_despesa(gc, df_info, df_despesas):
         obra_id = opcoes_obras[obra_selecionada_str]
         
         # --- FILTRAGEM DE DADOS PARA A OBRA SELECIONADA ---
-        # Garantir que o Obra_ID é string para o filtro
-        despesas_obra = df_despesas[df_despesas['Obra_ID'].astype(str) == str(obra_id)].copy()
+        # **CORREÇÃO CONTRA KEYERROR:** Checa se o DataFrame não está vazio E se a coluna existe antes de tentar filtrar
+        if df_despesas.empty or 'Obra_ID' not in df_despesas.columns or 'Semana_Ref' not in df_despesas.columns:
+            despesas_obra = pd.DataFrame() # Cria um DataFrame vazio seguro
+        else:
+            # Garante que o Obra_ID é string para o filtro
+            despesas_obra = df_despesas[df_despesas['Obra_ID'].astype(str) == str(obra_id)].copy()
         
         # ----------------------------------------------------
         # --- LAYOUT PRINCIPAL: Coluna 1 (Novo Registro) e Coluna 2 (Edição)
@@ -216,6 +220,7 @@ def show_registro_despesa(gc, df_info, df_despesas):
         with col1_reg:
             st.subheader(f"Novo Gasto (Obra: {obra_id})")
             
+            # Lógica para próxima semana (agora usa o despesas_obra seguro)
             if despesas_obra.empty:
                 proxima_semana = 1
             else:
@@ -243,7 +248,6 @@ def show_registro_despesa(gc, df_info, df_despesas):
             
             if despesas_obra.empty:
                 st.info("Nenhum gasto registrado para esta obra.")
-                # Não é um return, pois a coluna 1 já executou.
             else:
                 # Formata o DataFrame para exibição
                 despesas_display = despesas_obra.sort_values('Semana_Ref', ascending=False).copy()
@@ -293,7 +297,7 @@ def show_registro_despesa(gc, df_info, df_despesas):
                             
                             if submitted_edit:
                                 if novo_gasto >= 0:
-                                    # Chama a nova função de atualização
+                                    # Chama a função de atualização
                                     update_despesa(gc, obra_id, semana_selecionada, novo_gasto, nova_data)
                                 else:
                                     st.warning("O valor do gasto não pode ser negativo.")
@@ -316,6 +320,7 @@ def show_consulta_dados(df_info, df_despesas):
         return
 
     # 1. Agrega o gasto total por obra de forma segura
+    # Checa se o df_despesas não está vazio E se as colunas necessárias existem
     if not df_despesas.empty and 'Obra_ID' in df_despesas.columns and 'Gasto_Semana' in df_despesas.columns:
         # Garante que a coluna Gasto_Semana é numérica (o load_data já tenta fazer isso, mas esta é uma segurança extra)
         df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce').fillna(0)
@@ -388,6 +393,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
