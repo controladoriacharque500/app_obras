@@ -153,6 +153,14 @@ def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
     except Exception as e:
         st.error(f"Erro ao atualizar despesa: {e}. Verifique se os valores numéricos são válidos.")
 
+# --- Funções Auxiliares de Formatação ---
+
+def formatar_moeda(x):
+    """Formata um número para o padrão de moeda R$"""
+    if pd.isna(x):
+        return "R$ 0,00"
+    return f"R$ {float(x):,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
+
 # --- Interface do Usuário (Streamlit) ---
 
 def show_cadastro_obra(gc):
@@ -205,7 +213,6 @@ def show_registro_despesa(gc, df_info, df_despesas):
         obra_id = opcoes_obras[obra_selecionada_str]
         
         # --- FILTRAGEM DE DADOS PARA A OBRA SELECIONADA ---
-        # **CORREÇÃO CONTRA KEYERROR:** Checa se o DataFrame não está vazio E se a coluna existe antes de tentar filtrar
         if df_despesas.empty or 'Obra_ID' not in df_despesas.columns or 'Semana_Ref' not in df_despesas.columns:
             despesas_obra = pd.DataFrame() # Cria um DataFrame vazio seguro
         else:
@@ -224,7 +231,6 @@ def show_registro_despesa(gc, df_info, df_despesas):
             if despesas_obra.empty:
                 proxima_semana = 1
             else:
-                # O load_data já garante que Semana_Ref é numérica
                 proxima_semana = despesas_obra['Semana_Ref'].max() + 1
                 
             st.info(f"Próxima semana de referência a ser registrada: **Semana {proxima_semana}**")
@@ -251,7 +257,7 @@ def show_registro_despesa(gc, df_info, df_despesas):
             else:
                 # Formata o DataFrame para exibição
                 despesas_display = despesas_obra.sort_values('Semana_Ref', ascending=False).copy()
-                despesas_display['Gasto_Semana'] = despesas_display['Gasto_Semana'].apply(lambda x: f"R$ {x:,.2f}".replace(",", "#").replace(".", ",").replace("#", "."))
+                despesas_display['Gasto_Semana'] = despesas_display['Gasto_Semana'].apply(lambda x: formatar_moeda(x))
                 despesas_display = despesas_display.rename(columns={'Semana_Ref': 'Semana', 'Data_Semana': 'Data Ref.', 'Gasto_Semana': 'Gasto'})
 
                 # ----------------------------------------------------
@@ -320,34 +326,9 @@ def show_consulta_dados(df_info, df_despesas):
         return
 
     # 1. Agrega o gasto total por obra de forma segura
-    # Checa se o df_despesas não está vazio E se as colunas necessárias existem
-    if not df_despesas.empty and 'Obra_ID' in df_despesas.columns and 'Gasto_Semana' in df_despesas.columns:
-        # Garante que a coluna Gasto_Semana é numérica (o load_data já tenta fazer isso, mas esta é uma segurança extra)
-        df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce').fillna(0)
-        
-        # Tenta a agregação
-        try:
-            gastos_totais = df_despesas.groupby('Obra_ID')['Gasto_Semana'].sum().reset_index()
-            gastos_totais.rename(columns={'Gasto_Semana': 'Gasto_Total_Acumulado'}, inplace=True)
-        except Exception as e:
-            # Caso o groupby falhe (ex: tipos mistos), cria um DataFrame vazio de gastos
-            st.error(f"Erro na agregação de gastos. Detalhe: {e}")
-            gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
-    else:
-        # Cria um DataFrame de gastos zerado se o df_despesas estiver vazio ou sem as colunas chave
-        gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
-
-    # 2. Junta as informações de obras com os gastos
-    df_final = df_info.merge(gastos_totais, on='Obra_ID', how='left').fillna(0)
-    
-    # 3. Cálculo da Sobra
-    df_final['Gasto_Total_Acumulado'] = df_final['Gasto_Total_Acumulado'].round(2)
-    df_final['Sobrando_Financeiro'] = df_final['Valor_Total_Inicial'] - df_final['Gasto_Total_Acumulado']
+    df_final = calcular_status_financeiro(df_info, df_despesas)
     
     # 4. Formatação para exibição
-    def formatar_moeda(x):
-        return f"R$ {x:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
-
     df_display = df_final[[
         'Obra_ID',
         'Nome_Obra',
@@ -362,6 +343,97 @@ def show_consulta_dados(df_info, df_despesas):
     df_display['Sobrando_Financeiro'] = df_display['Sobrando_Financeiro'].apply(formatar_moeda)
 
     st.dataframe(df_display, use_container_width=True)
+
+
+def calcular_status_financeiro(df_info, df_despesas):
+    """Função auxiliar para calcular o status financeiro (reutilizada no relatório)"""
+    if not df_despesas.empty and 'Obra_ID' in df_despesas.columns and 'Gasto_Semana' in df_despesas.columns:
+        df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce').fillna(0)
+        
+        try:
+            gastos_totais = df_despesas.groupby('Obra_ID')['Gasto_Semana'].sum().reset_index()
+            gastos_totais.rename(columns={'Gasto_Semana': 'Gasto_Total_Acumulado'}, inplace=True)
+        except Exception as e:
+            gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
+    else:
+        gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
+
+    df_final = df_info.merge(gastos_totais, on='Obra_ID', how='left').fillna(0)
+    df_final['Gasto_Total_Acumulado'] = df_final['Gasto_Total_Acumulado'].round(2)
+    df_final['Sobrando_Financeiro'] = df_final['Valor_Total_Inicial'] - df_final['Gasto_Total_Acumulado']
+    
+    return df_final
+
+
+# --- NOVA FUNCIONALIDADE: RELATÓRIO ---
+
+def show_relatorio_obra(df_info, df_despesas):
+    st.header("4. Gerar Relatório Detalhado")
+
+    if df_info.empty:
+        st.info("Nenhuma obra cadastrada para gerar relatório.")
+        return
+
+    # 1. Mapear Obras
+    opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID']
+                    for index, row in df_info.iterrows()}
+
+    obra_selecionada_str = st.selectbox("Selecione a Obra para Relatório:", list(opcoes_obras.keys()), key="select_obra_relatorio")
+
+    if obra_selecionada_str:
+        obra_id = opcoes_obras[obra_selecionada_str]
+        
+        # 2. Calcular Status Financeiro Consolidado
+        df_status = calcular_status_financeiro(df_info, df_despesas)
+        
+        # 3. Filtrar Dados da Obra
+        info_obra = df_status[df_status['Obra_ID'] == obra_id].iloc[0]
+        despesas_obra = df_despesas[df_despesas['Obra_ID'].astype(str) == str(obra_id)].copy()
+        
+        st.markdown("---")
+        st.subheader(f"Relatório de Acompanhamento: {info_obra['Nome_Obra']}")
+        
+        st.markdown("""
+        **DICA PARA PDF/IMPRESSÃO:** Use a função de impressão do seu navegador (Ctrl+P ou Cmd+P) e escolha 'Salvar como PDF' para gerar o documento.
+        """)
+        
+        # --- Seção de Detalhes da Obra ---
+        st.markdown("#### Detalhes Gerais")
+        col_det1, col_det2 = st.columns(2)
+        
+        with col_det1:
+            st.metric("ID da Obra", info_obra['Obra_ID'])
+            st.metric("Data de Início", info_obra['Data_Inicio'].strftime('%d/%m/%Y') if pd.notna(info_obra['Data_Inicio']) else "N/A")
+            
+        with col_det2:
+            st.metric("Orçamento Inicial", formatar_moeda(info_obra['Valor_Total_Inicial']))
+            st.metric("Gasto Total Acumulado", formatar_moeda(info_obra['Gasto_Total_Acumulado']))
+        
+        # Destaque Final
+        st.markdown(f"### **Saldo Restante:** {formatar_moeda(info_obra['Sobrando_Financeiro'])}")
+        
+        st.markdown("---")
+
+        # --- Seção de Histórico de Despesas ---
+        st.markdown("#### Histórico de Despesas Semanais")
+        
+        if despesas_obra.empty:
+            st.info("Nenhum registro de despesa semanal encontrado para esta obra.")
+        else:
+            despesas_display = despesas_obra.sort_values('Semana_Ref', ascending=True).copy()
+            
+            # Reformatar colunas para o relatório
+            despesas_display['Gasto_Semana'] = despesas_display['Gasto_Semana'].apply(formatar_moeda)
+            despesas_display['Data_Semana'] = pd.to_datetime(despesas_display['Data_Semana']).dt.strftime('%d/%m/%Y')
+            
+            df_relatorio = despesas_display[['Semana_Ref', 'Data_Semana', 'Gasto_Semana']].rename(columns={
+                'Semana_Ref': 'Semana',
+                'Data_Semana': 'Data Referência',
+                'Gasto_Semana': 'Gasto da Semana'
+            })
+
+            # Exibir como tabela para impressão
+            st.dataframe(df_relatorio, use_container_width=True, hide_index=True)
 
 
 # --- Aplicação Principal ---
@@ -391,9 +463,12 @@ def main():
     st.markdown("---")
     show_consulta_dados(df_info, df_despesas)
 
+    st.markdown("---")
+    # NOVA SEÇÃO
+    show_relatorio_obra(df_info, df_despesas) 
+
 if __name__ == "__main__":
     main()
-
 
 
 
