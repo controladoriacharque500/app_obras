@@ -67,6 +67,7 @@ def load_data():
         if not df_despesas.empty:
             df_despesas['Obra_ID'] = df_despesas['Obra_ID'].astype(str)
             df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce')
+            df_despesas['Semana_Ref'] = pd.to_numeric(df_despesas['Semana_Ref'], errors='coerce').fillna(0).astype(int)
 
         return df_info, df_despesas
 
@@ -75,8 +76,7 @@ def load_data():
         return pd.DataFrame(), pd.DataFrame()
 
 
-# --- Funções de Escrita de Dados (Simulando INSERT) ---
-# Estas funções PRECISAM de 'gc' para escrever, e elas LIMPARÃO o cache da 'load_data'
+# --- Funções de Escrita de Dados (INSERT E UPDATE) ---
 
 def insert_new_obra(gc, data):
     """Insere uma nova obra na aba Obras_Info."""
@@ -100,6 +100,52 @@ def insert_new_despesa(gc, data):
     except Exception as e:
         st.error(f"Erro ao registrar despesa: {e}")
 
+# NOVA FUNÇÃO: UPDATE
+def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
+    """Atualiza o gasto e a data de uma semana de referência específica."""
+    try:
+        planilha = gc.open(PLANILHA_NOME)
+        aba_despesas = planilha.worksheet(ABA_DESPESAS)
+        
+        # 1. Obter todos os registros (incluindo o cabeçalho)
+        # Usamos get_all_values() para obter os dados com o índice Sheets correto (baseado em 1)
+        data = aba_despesas.get_all_values()
+        
+        # Encontra a linha correta no Sheets (Sheets_index = Python_index + 1)
+        sheets_row_index = -1
+        
+        # Iterar a partir da segunda linha (dados)
+        for i, row in enumerate(data[1:]):
+            # Assumindo que Obra_ID está na coluna 0 e Semana_Ref na coluna 1
+            if str(row[0]) == str(obra_id) and str(row[1]) == str(semana_ref):
+                # O índice da linha no Sheets é i + 2 (cabeçalho + índice 0 do Python)
+                sheets_row_index = i + 2 
+                break
+        
+        if sheets_row_index == -1:
+            st.warning("Linha de despesa não encontrada para atualização.")
+            return
+
+        # 3. Criar os novos dados da linha (na ordem das colunas do Sheets)
+        new_row_data = [
+            str(obra_id),
+            str(semana_ref),
+            nova_data.strftime('%Y-%m-%d'),
+            novo_gasto
+        ]
+        
+        # 4. Atualizar a linha (da primeira coluna 'A' até a última coluna 'D')
+        range_to_update = f'A{sheets_row_index}:D{sheets_row_index}'
+        aba_despesas.update(range_to_update, [new_row_data], value_input_option='USER_ENTERED')
+        
+        st.toast(f"✅ Semana {semana_ref} da Obra {obra_id} atualizada com sucesso!")
+        load_data.clear() # Limpa o cache para recarregar os dados
+        
+    except Exception as e:
+        st.error(f"Erro ao atualizar despesa: {e}")
+
+
+# --- Interface do Usuário (Streamlit) ---
 
 def show_cadastro_obra(gc):
     st.header("1. Cadastrar Nova Obra")
@@ -118,8 +164,6 @@ def show_cadastro_obra(gc):
     
     next_id_str = str(next_id).zfill(3)
     st.info(f"O próximo ID da Obra será: **{next_id_str}**")
-
-    # ... (o restante da função com o formulário de cadastro) ...
 
     with st.form("form_obra"):
         nome = st.text_input("Nome da Obra", placeholder="Ex: Casa Alpha")
@@ -146,45 +190,114 @@ def show_registro_despesa(gc, df_info, df_despesas):
     opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID']
                     for index, row in df_info.iterrows()}
 
-    obra_selecionada_str = st.selectbox("Selecione a Obra:", list(opcoes_obras.keys()))
+    # CRIA O SELECTBOX
+    obra_selecionada_str = st.selectbox("Selecione a Obra:", list(opcoes_obras.keys()), key="select_obra_registro")
 
     if obra_selecionada_str:
         obra_id = opcoes_obras[obra_selecionada_str]
+        
+        # --- FILTRAGEM DE DADOS PARA A OBRA SELECIONADA ---
+        # Garantir que o Obra_ID é string para o filtro
+        despesas_obra = df_despesas[df_despesas['Obra_ID'].astype(str) == str(obra_id)].copy()
+        
+        # ----------------------------------------------------
+        # --- LAYOUT PRINCIPAL: Coluna 1 (Novo Registro) e Coluna 2 (Edição)
+        # ----------------------------------------------------
+        col1_reg, col2_edit = st.columns([1, 1.2]) 
 
-        # CORREÇÃO: Verifica se o DataFrame de despesas NÃO está vazio antes de tentar filtrar
-        if df_despesas.empty:
-            proxima_semana = 1
-        else:
-            # Filtra despesas da obra selecionada (Esta linha só é executada se houver colunas válidas)
-            despesas_obra = df_despesas[df_despesas['Obra_ID'] == obra_id]
+        with col1_reg:
+            st.subheader(f"Novo Gasto (Obra: {obra_id})")
             
-            # Calcula a próxima semana de referência de forma segura
             if despesas_obra.empty:
                 proxima_semana = 1
             else:
-                # Trata a coluna para garantir que é numérica antes de calcular o max
-                try:
-                    proxima_semana = despesas_obra['Semana_Ref'].astype(str).str.replace(r'[^0-9]', '', regex=True).astype(int).max() + 1
-                except:
-                    # Caso a coluna esteja totalmente corrompida, retorna 1
-                    proxima_semana = 1
+                # O load_data já garante que Semana_Ref é numérica
+                proxima_semana = despesas_obra['Semana_Ref'].max() + 1
+                
+            st.info(f"Próxima semana de referência a ser registrada: **Semana {proxima_semana}**")
 
-        st.info(f"Próxima semana de referência a ser registrada: **Semana {proxima_semana}**")
+            with st.form("form_despesa"):
+                gasto = st.number_input("Gasto Total na Semana (R$)", min_value=0.0, format="%.2f", key="new_gasto")
+                data_semana = st.date_input("Data de Referência da Semana", key="new_data")
+                
+                submitted = st.form_submit_button("Registrar Novo Gasto")
+                
+                if submitted:
+                    if gasto > 0:
+                        data_list = [obra_id, proxima_semana, data_semana.strftime('%Y-%m-%d'), gasto]
+                        insert_new_despesa(gc, data_list)
+                    else:
+                        st.warning("O valor do gasto deve ser maior que R$ 0,00.")
 
-        with st.form("form_despesa"):
-            gasto = st.number_input("Gasto Total na Semana (R$)", min_value=0.0, format="%.2f")
 
-            # Data da semana (opcionalmente pode ser a data final da semana)
-            data_semana = st.date_input("Data de Referência da Semana (Ex: Domingo)")
+        with col2_edit:
+            st.subheader(f"Detalhes e Edição ({len(despesas_obra)} Semanas)")
+            
+            if despesas_obra.empty:
+                st.info("Nenhum gasto registrado para esta obra.")
+                # Não é um return, pois a coluna 1 já executou.
+            else:
+                # Formata o DataFrame para exibição
+                despesas_display = despesas_obra.sort_values('Semana_Ref', ascending=False).copy()
+                despesas_display['Gasto_Semana'] = despesas_display['Gasto_Semana'].apply(lambda x: f"R$ {x:,.2f}".replace(",", "#").replace(".", ",").replace("#", "."))
+                despesas_display = despesas_display.rename(columns={'Semana_Ref': 'Semana', 'Data_Semana': 'Data Ref.', 'Gasto_Semana': 'Gasto'})
 
-            submitted = st.form_submit_button("Registrar Gasto")
+                # ----------------------------------------------------
+                # Menu de Seleção para Edição
+                # ----------------------------------------------------
+                
+                semanas_opcoes = despesas_obra['Semana_Ref'].sort_values(ascending=False).tolist()
+                semana_selecionada = st.selectbox(
+                    "Selecione a Semana para Detalhar/Editar:", 
+                    semanas_opcoes, 
+                    format_func=lambda x: f"Semana {x}",
+                    key="select_semana_edicao"
+                )
+                
+                # --- DETALHAMENTO E FORMULÁRIO DE EDIÇÃO ---
+                if semana_selecionada:
+                    # Pega a linha da semana selecionada
+                    linha_edicao = despesas_obra[despesas_obra['Semana_Ref'] == semana_selecionada].iloc[0]
+                    
+                    # Converte os valores atuais para os tipos de input do Streamlit
+                    data_atual = datetime.strptime(linha_edicao['Data_Semana'], '%Y-%m-%d').date()
+                    gasto_atual = float(linha_edicao['Gasto_Semana'])
 
-            if submitted:
-                if gasto > 0:
-                    data_list = [obra_id, proxima_semana, data_semana.strftime('%Y-%m-%d'), gasto]
-                    insert_new_despesa(gc, data_list)
-                else:
-                    st.warning("O valor do gasto deve ser maior que R$ 0,00.")
+                    with st.expander(f"Editar Detalhes da Semana {semana_selecionada}", expanded=True):
+                        with st.form(f"form_edicao_semana_{semana_selecionada}"):
+                            
+                            st.markdown(f"**Editando: Obra {obra_id} - Semana {semana_selecionada}**")
+                            
+                            novo_gasto = st.number_input(
+                                "Novo Gasto Total (R$)", 
+                                min_value=0.0, 
+                                value=gasto_atual, 
+                                format="%.2f", 
+                                key="edit_gasto"
+                            )
+                            nova_data = st.date_input(
+                                "Nova Data de Referência", 
+                                value=data_atual, 
+                                key="edit_data"
+                            )
+                            
+                            submitted_edit = st.form_submit_button("Salvar Alterações")
+                            
+                            if submitted_edit:
+                                if novo_gasto >= 0:
+                                    # Chama a nova função de atualização
+                                    update_despesa(gc, obra_id, semana_selecionada, novo_gasto, nova_data)
+                                else:
+                                    st.warning("O valor do gasto não pode ser negativo.")
+                            
+                    # Exibe a tabela de todos os gastos abaixo do formulário de edição
+                    st.markdown("---")
+                    st.markdown("**Histórico de Gastos:**")
+                    st.dataframe(
+                        despesas_display[['Semana', 'Data Ref.', 'Gasto', 'Obra_ID']], 
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
 
 def show_consulta_dados(df_info, df_despesas):
@@ -219,7 +332,6 @@ def show_consulta_dados(df_info, df_despesas):
     df_final['Sobrando_Financeiro'] = df_final['Valor_Total_Inicial'] - df_final['Gasto_Total_Acumulado']
     
     # 4. Formatação para exibição
-    # ... (o restante da sua formatação de exibição) ...
     def formatar_moeda(x):
         return f"R$ {x:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
 
