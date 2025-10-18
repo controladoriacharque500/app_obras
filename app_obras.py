@@ -9,7 +9,7 @@ PLANILHA_NOME = "Controle_Obras" # O nome da sua nova planilha
 ABA_INFO = "Obras_Info"
 ABA_DESPESAS = "Despesas_Semanas"
 
-# --- Funções de Autenticação e Conexão (Reutilizando seu código) ---
+# --- Funções de Autenticação e Conexão ---
 
 @st.cache_resource(ttl=None) # Cache eterno para o objeto de conexão
 def get_gspread_client():
@@ -21,7 +21,7 @@ def get_gspread_client():
         secrets_dict = dict(st.secrets["gcp_service_account"])
         private_key_corrompida = secrets_dict["private_key"]
 
-        # Lógica de limpeza da chave
+        # Lógica de limpeza da chave (necessária para chaves quebradas)
         private_key_limpa = private_key_corrompida.replace('\n', '').replace(' ', '')
         private_key_limpa = private_key_limpa.replace('-----BEGINPRIVATEKEY-----', '').replace('-----ENDPRIVATEKEY-----', '')
         padding_necessario = len(private_key_limpa) % 4
@@ -41,7 +41,9 @@ def get_gspread_client():
 @st.cache_data(ttl=600)
 def load_data():
     """Carrega dados de ambas as abas e retorna dois DataFrames."""
+    # CHAMA A FUNÇÃO DE CONEXÃO CACHEADA INTERNAMENTE
     gc = get_gspread_client()
+    
     if not gc:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -74,16 +76,16 @@ def load_data():
 
 
 # --- Funções de Escrita de Dados (Simulando INSERT) ---
+# Estas funções PRECISAM de 'gc' para escrever, e elas LIMPARÃO o cache da 'load_data'
 
 def insert_new_obra(gc, data):
     """Insere uma nova obra na aba Obras_Info."""
     try:
         planilha = gc.open(PLANILHA_NOME)
         aba_info = planilha.worksheet(ABA_INFO)
-        # Os valores devem ser uma lista [ID, Nome, Valor, Data]
         aba_info.append_row(data)
         st.toast("✅ Nova obra cadastrada com sucesso!")
-        load_data.clear() # Limpa o cache para recarregar os dados
+        load_data.clear() # Limpa o cache para forçar recarga dos dados
     except Exception as e:
         st.error(f"Erro ao inserir nova obra: {e}")
 
@@ -92,10 +94,9 @@ def insert_new_despesa(gc, data):
     try:
         planilha = gc.open(PLANILHA_NOME)
         aba_despesas = planilha.worksheet(ABA_DESPESAS)
-        # Os valores devem ser uma lista [Obra_ID, Semana_Ref, Data_Semana, Gasto_Semana]
         aba_despesas.append_row(data)
         st.toast("✅ Despesa semanal registrada com sucesso!")
-        load_data.clear() # Limpa o cache para recarregar os dados
+        load_data.clear() # Limpa o cache para forçar recarga dos dados
     except Exception as e:
         st.error(f"Erro ao registrar despesa: {e}")
 
@@ -104,28 +105,27 @@ def insert_new_despesa(gc, data):
 
 def show_cadastro_obra(gc):
     st.header("1. Cadastrar Nova Obra")
-    df_info, _ = load_data(gc)
+    # CORREÇÃO: load_data é chamado SEM gc para evitar UnhashableParamError
+    df_info, _ = load_data() 
 
-    # Gera o próximo ID (Simples, mas funcional)
+    # Gera o próximo ID
     next_id = 1
     if not df_info.empty:
         try:
-            # Pega o ID máximo e adiciona 1
             next_id = df_info['Obra_ID'].astype(int).max() + 1
         except:
-             # Caso a coluna não seja numérica
              next_id = len(df_info) + 1
-
+             
     next_id_str = str(next_id).zfill(3)
     st.info(f"O próximo ID da Obra será: **{next_id_str}**")
-
+    
     with st.form("form_obra"):
         nome = st.text_input("Nome da Obra", placeholder="Ex: Casa Alpha")
         valor = st.number_input("Valor Total Inicial (R$)", min_value=0.0, format="%.2f")
         data_inicio = st.date_input("Data de Início da Obra")
-
+        
         submitted = st.form_submit_button("Cadastrar Obra")
-
+        
         if submitted:
             if nome and valor > 0:
                 data_list = [next_id_str, nome, valor, data_inicio.strftime('%Y-%m-%d')]
@@ -135,39 +135,38 @@ def show_cadastro_obra(gc):
 
 def show_registro_despesa(gc, df_info, df_despesas):
     st.header("2. Registrar Despesa Semanal")
-
+    
     if df_info.empty:
         st.warning("Cadastre pelo menos uma obra para registrar despesas.")
         return
 
     # Mapeia obras para o SelectBox: 'Nome_Obra (ID)'
-    opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID']
+    opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID'] 
                     for index, row in df_info.iterrows()}
-
+    
     obra_selecionada_str = st.selectbox("Selecione a Obra:", list(opcoes_obras.keys()))
-
+    
     if obra_selecionada_str:
         obra_id = opcoes_obras[obra_selecionada_str]
-
+        
         # Filtra despesas da obra selecionada
         despesas_obra = df_despesas[df_despesas['Obra_ID'] == obra_id]
-
+        
         # Calcula a próxima semana de referência
         if despesas_obra.empty:
             proxima_semana = 1
         else:
             proxima_semana = despesas_obra['Semana_Ref'].astype(int).max() + 1
-
+            
         st.info(f"Próxima semana de referência a ser registrada: **Semana {proxima_semana}**")
-
+        
         with st.form("form_despesa"):
             gasto = st.number_input("Gasto Total na Semana (R$)", min_value=0.0, format="%.2f")
-
-            # Data da semana (opcionalmente pode ser a data final da semana)
+            
             data_semana = st.date_input("Data de Referência da Semana (Ex: Domingo)")
-
+            
             submitted = st.form_submit_button("Registrar Gasto")
-
+            
             if submitted:
                 if gasto > 0:
                     data_list = [obra_id, proxima_semana, data_semana.strftime('%Y-%m-%d'), gasto]
@@ -178,7 +177,7 @@ def show_registro_despesa(gc, df_info, df_despesas):
 
 def show_consulta_dados(df_info, df_despesas):
     st.header("3. Status Financeiro das Obras")
-
+    
     if df_info.empty:
         st.info("Nenhuma obra cadastrada para consultar.")
         return
@@ -186,18 +185,18 @@ def show_consulta_dados(df_info, df_despesas):
     # 1. Agrega o gasto total por obra
     gastos_totais = df_despesas.groupby('Obra_ID')['Gasto_Semana'].sum().reset_index()
     gastos_totais.rename(columns={'Gasto_Semana': 'Gasto_Total_Acumulado'}, inplace=True)
-
+    
     # 2. Junta as informações de obras com os gastos
     df_final = df_info.merge(gastos_totais, on='Obra_ID', how='left').fillna(0)
-
+    
     # 3. Cálculo da Sobra
     df_final['Gasto_Total_Acumulado'] = df_final['Gasto_Total_Acumulado'].round(2)
     df_final['Sobrando_Financeiro'] = df_final['Valor_Total_Inicial'] - df_final['Gasto_Total_Acumulado']
-
+    
     # 4. Formatação para exibição
     def formatar_moeda(x):
         return f"R$ {x:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
-
+        
     df_display = df_final[[
         'Obra_ID',
         'Nome_Obra',
@@ -206,11 +205,11 @@ def show_consulta_dados(df_info, df_despesas):
         'Sobrando_Financeiro',
         'Data_Inicio'
     ]].copy()
-
+    
     df_display['Valor_Total_Inicial'] = df_display['Valor_Total_Inicial'].apply(formatar_moeda)
     df_display['Gasto_Total_Acumulado'] = df_display['Gasto_Total_Acumulado'].apply(formatar_moeda)
     df_display['Sobrando_Financeiro'] = df_display['Sobrando_Financeiro'].apply(formatar_moeda)
-
+    
     st.dataframe(df_display, use_container_width=True)
 
 
@@ -220,28 +219,24 @@ def main():
     st.set_page_config(page_title="Controle Financeiro de Obras", layout="wide")
     st.title("🚧 Sistema de Gerenciamento de Obras")
     st.markdown("---")
-
-    # 1. Obter o cliente Gspread (cacheado)
+    
     gc = get_gspread_client()
-
+    
     if not gc:
         st.stop() # Parar se a autenticação falhar
-
-    # 2. Recarrega os dados a cada execução/interação
-    # CORREÇÃO CRÍTICA: CHAMAR load_data SEM PARÂMETROS!
+        
+    # Recarrega os dados a cada execução/interação (CHAMADO SEM PARÂMETROS)
     df_info, df_despesas = load_data() 
-
+    
     # Layout de colunas para as páginas de ação
     col_cadastro, col_registro = st.columns(2)
-
+    
     with col_cadastro:
-        # gc é necessário aqui para a ESCRITA, então ele é passado para show_cadastro_obra
-        show_cadastro_obra(gc) 
-
+        show_cadastro_obra(gc) # gc é passado para a função de ESCRITA
+        
     with col_registro:
-        # gc é necessário aqui para a ESCRITA, então ele é passado para show_registro_despesa
-        show_registro_despesa(gc, df_info, df_despesas) 
-
+        show_registro_despesa(gc, df_info, df_despesas)
+        
     st.markdown("---")
     show_consulta_dados(df_info, df_despesas)
 
