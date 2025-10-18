@@ -37,7 +37,8 @@ def get_gspread_client():
 
 # --- Funções de Leitura de Dados (Banco de Dados) ---
 
-# Limpar o cache a cada 10 minutos (600s)
+# --- Funções de Leitura de Dados (Banco de Dados) ---
+# Adicionado tratamento para int64/float64 na limpeza
 @st.cache_data(ttl=600)
 def load_data():
     """Carrega dados de ambas as abas e retorna dois DataFrames."""
@@ -67,6 +68,7 @@ def load_data():
         if not df_despesas.empty:
             df_despesas['Obra_ID'] = df_despesas['Obra_ID'].astype(str)
             df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce')
+            # Garante que Semana_Ref é int nativo
             df_despesas['Semana_Ref'] = pd.to_numeric(df_despesas['Semana_Ref'], errors='coerce').fillna(0).astype(int)
 
         return df_info, df_despesas
@@ -94,13 +96,17 @@ def insert_new_despesa(gc, data):
     try:
         planilha = gc.open(PLANILHA_NOME)
         aba_despesas = planilha.worksheet(ABA_DESPESAS)
-        aba_despesas.append_row(data)
+        
+        # CORREÇÃO: Converter todos os elementos para tipos nativos antes de enviar
+        data_nativa = [str(data[0]), int(data[1]), data[2], float(data[3])]
+
+        aba_despesas.append_row(data_nativa)
         st.toast("✅ Despesa semanal registrada com sucesso!")
         load_data.clear() # Limpa o cache para forçar recarga dos dados
     except Exception as e:
-        st.error(f"Erro ao registrar despesa: {e}")
+        st.error(f"Erro ao registrar despesa: {e}. Verifique se todos os valores numéricos são floats ou ints nativos.")
 
-# NOVA FUNÇÃO: UPDATE
+
 def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
     """Atualiza o gasto e a data de uma semana de referência específica."""
     try:
@@ -108,10 +114,8 @@ def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
         aba_despesas = planilha.worksheet(ABA_DESPESAS)
         
         # 1. Obter todos os registros (incluindo o cabeçalho)
-        # Usamos get_all_values() para obter os dados com o índice Sheets correto (baseado em 1)
         data = aba_despesas.get_all_values()
         
-        # Encontra a linha correta no Sheets (Sheets_index = Python_index + 1)
         sheets_row_index = -1
         
         # Iterar a partir da segunda linha (dados)
@@ -127,11 +131,12 @@ def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
             return
 
         # 3. Criar os novos dados da linha (na ordem das colunas do Sheets)
+        # CORREÇÃO: Converte valores numéricos para tipos nativos
         new_row_data = [
             str(obra_id),
-            str(semana_ref),
+            int(semana_ref), # Garante que é int nativo
             nova_data.strftime('%Y-%m-%d'),
-            novo_gasto
+            float(novo_gasto) # Garante que é float nativo
         ]
         
         # 4. Atualizar a linha (da primeira coluna 'A' até a última coluna 'D')
@@ -142,7 +147,10 @@ def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
         load_data.clear() # Limpa o cache para recarregar os dados
         
     except Exception as e:
-        st.error(f"Erro ao atualizar despesa: {e}")
+        st.error(f"Erro ao atualizar despesa: {e}. Verifique se os valores numéricos são válidos.")
+
+# --- O RESTANTE DO CÓDIGO PERMANECE O MESMO ---
+# (show_cadastro_obra, show_registro_despesa, show_consulta_dados e main)
 
 
 # --- Interface do Usuário (Streamlit) ---
@@ -380,6 +388,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
