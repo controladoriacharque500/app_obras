@@ -137,38 +137,48 @@ def show_cadastro_obra(gc):
 
 def show_registro_despesa(gc, df_info, df_despesas):
     st.header("2. Registrar Despesa Semanal")
-    
+
     if df_info.empty:
         st.warning("Cadastre pelo menos uma obra para registrar despesas.")
         return
 
     # Mapeia obras para o SelectBox: 'Nome_Obra (ID)'
-    opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID'] 
+    opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID']
                     for index, row in df_info.iterrows()}
-    
+
     obra_selecionada_str = st.selectbox("Selecione a Obra:", list(opcoes_obras.keys()))
-    
+
     if obra_selecionada_str:
         obra_id = opcoes_obras[obra_selecionada_str]
-        
-        # Filtra despesas da obra selecionada
-        despesas_obra = df_despesas[df_despesas['Obra_ID'] == obra_id]
-        
-        # Calcula a próxima semana de referência
-        if despesas_obra.empty:
+
+        # CORREÇÃO: Verifica se o DataFrame de despesas NÃO está vazio antes de tentar filtrar
+        if df_despesas.empty:
             proxima_semana = 1
         else:
-            proxima_semana = despesas_obra['Semana_Ref'].astype(int).max() + 1
+            # Filtra despesas da obra selecionada (Esta linha só é executada se houver colunas válidas)
+            despesas_obra = df_despesas[df_despesas['Obra_ID'] == obra_id]
             
+            # Calcula a próxima semana de referência de forma segura
+            if despesas_obra.empty:
+                proxima_semana = 1
+            else:
+                # Trata a coluna para garantir que é numérica antes de calcular o max
+                try:
+                    proxima_semana = despesas_obra['Semana_Ref'].astype(str).str.replace(r'[^0-9]', '', regex=True).astype(int).max() + 1
+                except:
+                    # Caso a coluna esteja totalmente corrompida, retorna 1
+                    proxima_semana = 1
+
         st.info(f"Próxima semana de referência a ser registrada: **Semana {proxima_semana}**")
-        
+
         with st.form("form_despesa"):
             gasto = st.number_input("Gasto Total na Semana (R$)", min_value=0.0, format="%.2f")
-            
+
+            # Data da semana (opcionalmente pode ser a data final da semana)
             data_semana = st.date_input("Data de Referência da Semana (Ex: Domingo)")
-            
+
             submitted = st.form_submit_button("Registrar Gasto")
-            
+
             if submitted:
                 if gasto > 0:
                     data_list = [obra_id, proxima_semana, data_semana.strftime('%Y-%m-%d'), gasto]
@@ -244,5 +254,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
