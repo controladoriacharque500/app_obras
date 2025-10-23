@@ -466,9 +466,9 @@ def show_relatorio_obra(gc, df_info, df_despesas):
         st.markdown("---")
         st.subheader(f"Relatório de Acompanhamento: {info_obra['Nome_Obra']}")
         
-        st.markdown("""
-        **DICA PARA PDF/IMPRESSÃO:** Use a função de impressão do seu navegador (Ctrl+P ou Cmd+P) e escolha 'Salvar como PDF' para gerar o documento.
-        """)
+        #st.markdown("""
+        #**DICA PARA PDF/IMPRESSÃO:** Use a função de impressão do seu navegador (Ctrl+P ou Cmd+P) e escolha 'Salvar como PDF' para gerar o documento.
+        #""")
         
         col_det1, col_det2 = st.columns(2)
         
@@ -555,6 +555,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
