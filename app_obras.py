@@ -3,11 +3,21 @@ import pandas as pd
 from gspread import service_account_from_dict
 from datetime import datetime, timedelta
 import json
+from gspread.exceptions import WorksheetNotFound
 
 # --- Configurações da Nova Planilha ---
 PLANILHA_NOME = "Controle_Obras" # O nome da sua nova planilha
 ABA_INFO = "Obras_Info"
 ABA_DESPESAS = "Despesas_Semanas"
+
+# --- Constantes para Navegação ---
+PAGINAS = {
+    "1. Cadastrar Nova Obra": "CADASTRO",
+    "2. Registrar Despesa Semanal": "REGISTRO_DESPESA",
+    "3. Status Financeiro das Obras": "CONSULTA_STATUS",
+    "4. Gerar Relatório Detalhado": "RELATORIO"
+}
+PAGINAS_REVERSO = {v: k for k, v in PAGINAS.items()}
 
 # --- Funções de Autenticação e Conexão ---
 
@@ -40,7 +50,6 @@ def get_gspread_client():
 @st.cache_data(ttl=600)
 def load_data():
     """Carrega dados de ambas as abas e retorna dois DataFrames."""
-    # CHAMA A FUNÇÃO DE CONEXÃO CACHEADA INTERNAMENTE
     gc = get_gspread_client()
     
     if not gc:
@@ -49,51 +58,105 @@ def load_data():
     try:
         planilha = gc.open(PLANILHA_NOME)
 
-        # 1. Carregar OBRAS_INFO
         aba_info = planilha.worksheet(ABA_INFO)
         df_info = pd.DataFrame(aba_info.get_all_records())
 
-        # 2. Carregar DESPESAS_SEMANAS
         aba_despesas = planilha.worksheet(ABA_DESPESAS)
         df_despesas = pd.DataFrame(aba_despesas.get_all_records())
 
-        # 3. Limpeza e Conversão de Tipos (Checa se a coluna existe antes de tentar converter)
+        # Limpeza e Conversão de Tipos (Checa se a coluna existe antes de tentar converter)
         if not df_info.empty:
-            if 'Obra_ID' in df_info.columns:
-                 df_info['Obra_ID'] = df_info['Obra_ID'].astype(str)
-            if 'Valor_Total_Inicial' in df_info.columns:
-                 df_info['Valor_Total_Inicial'] = pd.to_numeric(df_info['Valor_Total_Inicial'], errors='coerce')
-            if 'Data_Inicio' in df_info.columns:
-                 df_info['Data_Inicio'] = pd.to_datetime(df_info['Data_Inicio'], errors='coerce')
+            if 'Obra_ID' in df_info.columns: 
+                 # Converte para INT e depois para STR (ex: 1 -> '1')
+                 df_info['Obra_ID'] = pd.to_numeric(df_info['Obra_ID'], errors='coerce').fillna(0).astype(int).astype(str)
+            if 'Valor_Total_Inicial' in df_info.columns: df_info['Valor_Total_Inicial'] = pd.to_numeric(df_info['Valor_Total_Inicial'], errors='coerce')
+            if 'Data_Inicio' in df_info.columns: df_info['Data_Inicio'] = pd.to_datetime(df_info['Data_Inicio'], errors='coerce')
 
         if not df_despesas.empty:
-            if 'Obra_ID' in df_despesas.columns:
-                 df_despesas['Obra_ID'] = df_despesas['Obra_ID'].astype(str)
-            if 'Gasto_Semana' in df_despesas.columns:
-                 df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce')
+            if 'Obra_ID' in df_despesas.columns: 
+                # Converte para INT e depois para STR (ex: 1 -> '1')
+                df_despesas['Obra_ID'] = pd.to_numeric(df_despesas['Obra_ID'], errors='coerce').fillna(0).astype(int).astype(str)
+            if 'Gasto_Semana' in df_despesas.columns: df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce')
             if 'Semana_Ref' in df_despesas.columns:
-                 # Garante que Semana_Ref é int nativo
                  df_despesas['Semana_Ref'] = pd.to_numeric(df_despesas['Semana_Ref'], errors='coerce').fillna(0).astype(int)
 
         return df_info, df_despesas
 
+    except WorksheetNotFound as e:
+        st.error(f"Erro: A aba '{ABA_INFO}' ou '{ABA_DESPESAS}' não foi encontrada na planilha '{PLANILHA_NOME}'. Verifique os nomes.")
+        return pd.DataFrame(), pd.DataFrame()
     except Exception as e:
-        st.error(f"Erro ao carregar dados: Verifique se a planilha '{PLANILHA_NOME}' e as abas '{ABA_INFO}' e '{ABA_DESPESAS}' existem e se as colunas estão corretas. Detalhe: {e}")
+        st.error(f"Erro ao carregar dados: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
 
 # --- Funções de Escrita de Dados (INSERT E UPDATE) ---
 
 def insert_new_obra(gc, data):
-    """Insere uma nova obra na aba Obras_Info."""
+    """Insere uma nova obra na aba Obras_Info, como número inteiro."""
     try:
         planilha = gc.open(PLANILHA_NOME)
         aba_info = planilha.worksheet(ABA_INFO)
-        aba_info.append_row(data)
+        
+        # O ID é passado como INT para que o Sheets o salve como NÚMERO
+        data[0] = int(data[0]) 
+        
+        # CORREÇÃO: Removido 'raw=False'
+        aba_info.append_row(data, insert_data_option='INSERT_ROWS')
+        
         st.toast("✅ Nova obra cadastrada com sucesso!")
-        load_data.clear() # Limpa o cache para forçar recarga dos dados
+        load_data.clear()
     except Exception as e:
+        # Apresenta o erro específico
         st.error(f"Erro ao inserir nova obra: {e}")
+
+def update_obra_info(gc, obra_id, new_nome, new_valor, new_data_inicio):
+    """Atualiza a obra buscando o ID como número inteiro no Sheets."""
+    try:
+        planilha = gc.open(PLANILHA_NOME)
+        aba_info = planilha.worksheet(ABA_INFO)
+        
+        # Lemos todos os valores para fazer a busca manual (mais confiável com IDs numéricos)
+        data = aba_info.get_all_values()
+        
+        sheets_row_index = -1
+        # O ID deve ser tratado como número inteiro para a busca
+        id_int_para_buscar = int(obra_id)
+        
+        # Procura a linha da Obra_ID
+        for i, row in enumerate(data[1:]):
+            try:
+                # Compara o ID da linha como número inteiro (coluna 0)
+                if int(row[0].strip() if row[0] else 0) == id_int_para_buscar: 
+                    sheets_row_index = i + 2 # Índice da linha no Sheets é i + 2
+                    break
+            except ValueError:
+                # Ignora linhas com IDs não numéricos
+                continue
+        
+        if sheets_row_index == -1:
+            st.warning(f"Obra ID {obra_id} não encontrada para atualização.")
+            return
+
+        # Novas colunas de dados na ordem: Obra_ID (como INT), Nome_Obra, Valor_Total_Inicial, Data_Inicio
+        new_row_data = [
+            id_int_para_buscar, # Passa o ID como INT
+            str(new_nome),
+            float(new_valor), 
+            new_data_inicio.strftime('%Y-%m-%d') 
+        ]
+        
+        # O intervalo é da coluna A até a D (assumindo 4 colunas)
+        range_to_update = f'A{sheets_row_index}:D{sheets_row_index}'
+        # Apenas passamos a lista de listas, sem value_input_option se não for estritamente necessário.
+        aba_info.update(range_to_update, [new_row_data]) 
+        
+        st.toast(f"✅ Obra {obra_id} ({new_nome}) atualizada com sucesso!")
+        load_data.clear()
+        
+    except Exception as e:
+        st.error(f"Erro ao atualizar obra: {e}. Verifique se a coluna 'Obra_ID' é a primeira coluna na aba 'Obras_Info'.")
+
 
 def insert_new_despesa(gc, data):
     """Insere uma nova despesa semanal na aba Despesas_Semanas."""
@@ -101,59 +164,58 @@ def insert_new_despesa(gc, data):
         planilha = gc.open(PLANILHA_NOME)
         aba_despesas = planilha.worksheet(ABA_DESPESAS)
         
-        # CORREÇÃO DE SERIALIZAÇÃO: Converter todos os elementos para tipos nativos antes de enviar
-        data_nativa = [str(data[0]), int(data[1]), data[2], float(data[3])]
+        # O ID de obra deve ser INT para salvar corretamente no Sheets
+        data_nativa = [int(data[0]), int(data[1]), data[2], float(data[3])]
 
-        aba_despesas.append_row(data_nativa)
+        # CORREÇÃO: Removido 'raw=False'
+        aba_despesas.append_row(data_nativa, insert_data_option='INSERT_ROWS')
         st.toast("✅ Despesa semanal registrada com sucesso!")
-        load_data.clear() # Limpa o cache para forçar recarga dos dados
+        load_data.clear()
     except Exception as e:
-        st.error(f"Erro ao registrar despesa: {e}. Verifique se todos os valores numéricos são floats ou ints nativos.")
-
+        # Apresenta o erro específico
+        st.error(f"Erro ao registrar despesa: {e}")
 
 def update_despesa(gc, obra_id, semana_ref, novo_gasto, nova_data):
     """Atualiza o gasto e a data de uma semana de referência específica."""
     try:
         planilha = gc.open(PLANILHA_NOME)
         aba_despesas = planilha.worksheet(ABA_DESPESAS)
-        
-        # 1. Obter todos os registros (incluindo o cabeçalho)
         data = aba_despesas.get_all_values()
         
         sheets_row_index = -1
-        
-        # Iterar a partir da segunda linha (dados)
+        # ID como INT para a comparação
+        id_int_para_buscar = int(obra_id) 
+
         for i, row in enumerate(data[1:]):
-            # Assumindo que Obra_ID está na coluna 0 e Semana_Ref na coluna 1
-            if str(row[0]) == str(obra_id) and str(row[1]) == str(semana_ref):
-                # O índice da linha no Sheets é i + 2 (cabeçalho + índice 0 do Python)
-                sheets_row_index = i + 2 
-                break
+            try:
+                # Compara o ID da linha como número inteiro (coluna 0) e a semana
+                if int(row[0].strip() if row[0] else 0) == id_int_para_buscar and int(row[1]) == int(semana_ref):
+                    sheets_row_index = i + 2 
+                    break
+            except ValueError:
+                 continue
         
         if sheets_row_index == -1:
             st.warning("Linha de despesa não encontrada para atualização.")
             return
 
-        # 3. Criar os novos dados da linha (na ordem das colunas do Sheets)
-        # CORREÇÃO DE SERIALIZAÇÃO: Converte valores numéricos para tipos nativos
         new_row_data = [
-            str(obra_id),
-            int(semana_ref), # Garante que é int nativo
+            id_int_para_buscar, # ID como INT
+            int(semana_ref),
             nova_data.strftime('%Y-%m-%d'),
-            float(novo_gasto) # Garante que é float nativo
+            float(novo_gasto)
         ]
         
-        # 4. Atualizar a linha (da primeira coluna 'A' até a última coluna 'D')
         range_to_update = f'A{sheets_row_index}:D{sheets_row_index}'
-        aba_despesas.update(range_to_update, [new_row_data], value_input_option='USER_ENTERED')
+        aba_despesas.update(range_to_update, [new_row_data])
         
         st.toast(f"✅ Semana {semana_ref} da Obra {obra_id} atualizada com sucesso!")
-        load_data.clear() # Limpa o cache para recarregar os dados
+        load_data.clear()
         
     except Exception as e:
-        st.error(f"Erro ao atualizar despesa: {e}. Verifique se os valores numéricos são válidos.")
+        st.error(f"Erro ao atualizar despesa: {e}")
 
-# --- Funções Auxiliares de Formatação ---
+# --- Funções Auxiliares de Formatação e Cálculo ---
 
 def formatar_moeda(x):
     """Formata um número para o padrão de moeda R$"""
@@ -161,73 +223,136 @@ def formatar_moeda(x):
         return "R$ 0,00"
     return f"R$ {float(x):,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
 
-# --- Interface do Usuário (Streamlit) ---
-
-def show_cadastro_obra(gc):
-    st.header("1. Cadastrar Nova Obra")
-    df_info, _ = load_data()
-
-    # Gera o próximo ID de forma mais segura
-    next_id = 1
-    if not df_info.empty and 'Obra_ID' in df_info.columns:
+def calcular_status_financeiro(df_info, df_despesas):
+    """Função auxiliar para calcular o status financeiro (reutilizada no relatório)"""
+    if not df_despesas.empty and 'Obra_ID' in df_despesas.columns and 'Gasto_Semana' in df_despesas.columns:
+        df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce').fillna(0)
+        
         try:
-            # Tenta pegar o máximo ID, se a coluna for limpa e numérica
-            max_id = df_info['Obra_ID'].astype(str).str.replace(r'[^0-9]', '', regex=True).astype(int).max()
-            next_id = max_id + 1
-        except Exception as e:
-            # Se a limpeza falhar, apenas usa a contagem de linhas
-            next_id = len(df_info) + 1
-    
-    next_id_str = str(next_id).zfill(3)
-    st.info(f"O próximo ID da Obra será: **{next_id_str}**")
+            gastos_totais = df_despesas.groupby('Obra_ID')['Gasto_Semana'].sum().reset_index()
+            gastos_totais.rename(columns={'Gasto_Semana': 'Gasto_Total_Acumulado'}, inplace=True)
+        except:
+            gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
+    else:
+        gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
 
-    with st.form("form_obra"):
-        nome = st.text_input("Nome da Obra", placeholder="Ex: Casa Alpha")
-        valor = st.number_input("Valor Total Inicial (R$)", min_value=0.0, format="%.2f")
-        data_inicio = st.date_input("Data de Início da Obra")
+    df_final = df_info.merge(gastos_totais, on='Obra_ID', how='left').fillna(0)
+    df_final['Gasto_Total_Acumulado'] = df_final['Gasto_Total_Acumulado'].round(2)
+    df_final['Sobrando_Financeiro'] = df_final['Valor_Total_Inicial'] - df_final['Gasto_Total_Acumulado']
+    
+    return df_final
+
+
+# --- Funções das "Páginas" ---
+
+def show_cadastro_obra(gc, df_info):
+    st.title(PAGINAS_REVERSO["CADASTRO"])
+
+    col_new, col_edit = st.columns(2)
+
+    # --- Coluna 1: Cadastrar Nova Obra ---
+    with col_new:
+        st.subheader("Cadastrar Nova Obra")
         
-        submitted = st.form_submit_button("Cadastrar Obra")
+        next_id = 1
+        if not df_info.empty and 'Obra_ID' in df_info.columns:
+            try:
+                # O ID é tratado como int no dataframe para encontrar o máximo
+                max_id = df_info['Obra_ID'].astype(int).max()
+                next_id = max_id + 1
+            except:
+                next_id = len(df_info) + 1
         
-        if submitted:
-            if nome and valor > 0:
-                data_list = [next_id_str, nome, valor, data_inicio.strftime('%Y-%m-%d')]
-                insert_new_obra(gc, data_list)
-            else:
-                st.warning("Preencha todos os campos corretamente.")
+        # O ID é o número inteiro, não a string formatada
+        st.info(f"O próximo ID da Obra será: **{next_id}**")
+
+        with st.form("form_nova_obra"):
+            nome = st.text_input("Nome da Obra", placeholder="Ex: Casa Alpha")
+            valor = st.number_input("Valor Total Inicial (R$)", min_value=0.0, format="%.2f")
+            data_inicio = st.date_input("Data de Início da Obra")
+            
+            submitted = st.form_submit_button("Cadastrar Obra")
+            
+            if submitted:
+                if nome and valor > 0:
+                    # Passa o ID como o número inteiro
+                    data_list = [next_id, nome, valor, data_inicio.strftime('%Y-%m-%d')]
+                    insert_new_obra(gc, data_list)
+                else:
+                    st.warning("Preencha todos os campos corretamente.")
+
+    # --- Coluna 2: Editar Obra Existente ---
+    with col_edit:
+        st.subheader("Editar Obra Existente")
+        
+        if df_info.empty:
+            st.info("Nenhuma obra cadastrada para editar.")
+        else:
+            opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID'] 
+                            for index, row in df_info.iterrows()}
+            
+            obra_selecionada_str = st.selectbox("Selecione a Obra para Editar:", 
+                                                list(opcoes_obras.keys()), 
+                                                key="select_obra_edicao")
+
+            if obra_selecionada_str:
+                obra_id_para_editar = opcoes_obras[obra_selecionada_str]
+                
+                obra_data = df_info[df_info['Obra_ID'] == obra_id_para_editar].iloc[0]
+                
+                data_inicio_atual = obra_data['Data_Inicio'].date() if pd.notna(obra_data['Data_Inicio']) else datetime.today().date()
+                
+                with st.form("form_edicao_obra"):
+                    st.markdown(f"**Editando: Obra {obra_id_para_editar}**")
+                    
+                    novo_nome = st.text_input("Novo Nome da Obra", 
+                                              value=obra_data['Nome_Obra'], 
+                                              key="edit_nome")
+                                              
+                    novo_valor = st.number_input("Novo Valor Total Inicial (R$)", 
+                                                 min_value=0.0, 
+                                                 value=float(obra_data['Valor_Total_Inicial']), 
+                                                 format="%.2f", 
+                                                 key="edit_valor")
+                                                 
+                    nova_data_inicio = st.date_input("Nova Data de Início", 
+                                                      value=data_inicio_atual,
+                                                      key="edit_data_inicio")
+                    
+                    submitted_edit = st.form_submit_button("Salvar Edição da Obra")
+                    
+                    if submitted_edit:
+                        if novo_nome and novo_valor >= 0:
+                            update_obra_info(gc, obra_id_para_editar, novo_nome, novo_valor, nova_data_inicio)
+                        else:
+                            st.warning("Preencha o nome e um valor inicial válido.")
+
 
 def show_registro_despesa(gc, df_info, df_despesas):
-    st.header("2. Registrar Despesa Semanal")
+    st.title(PAGINAS_REVERSO["REGISTRO_DESPESA"])
 
     if df_info.empty:
         st.warning("Cadastre pelo menos uma obra para registrar despesas.")
         return
 
-    # Mapeia obras para o SelectBox: 'Nome_Obra (ID)'
     opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID']
                     for index, row in df_info.iterrows()}
 
-    # CRIA O SELECTBOX
     obra_selecionada_str = st.selectbox("Selecione a Obra:", list(opcoes_obras.keys()), key="select_obra_registro")
 
     if obra_selecionada_str:
-        obra_id = opcoes_obras[obra_selecionada_str]
+        obra_id = opcoes_obcoes[obra_selecionada_str]
         
-        # --- FILTRAGEM DE DADOS PARA A OBRA SELECIONADA ---
         if df_despesas.empty or 'Obra_ID' not in df_despesas.columns or 'Semana_Ref' not in df_despesas.columns:
-            despesas_obra = pd.DataFrame() # Cria um DataFrame vazio seguro
+            despesas_obra = pd.DataFrame()
         else:
-            # Garante que o Obra_ID é string para o filtro
             despesas_obra = df_despesas[df_despesas['Obra_ID'].astype(str) == str(obra_id)].copy()
         
-        # ----------------------------------------------------
-        # --- LAYOUT PRINCIPAL: Coluna 1 (Novo Registro) e Coluna 2 (Edição)
-        # ----------------------------------------------------
         col1_reg, col2_edit = st.columns([1, 1.2]) 
 
         with col1_reg:
             st.subheader(f"Novo Gasto (Obra: {obra_id})")
             
-            # Lógica para próxima semana (agora usa o despesas_obra seguro)
             if despesas_obra.empty:
                 proxima_semana = 1
             else:
@@ -243,6 +368,7 @@ def show_registro_despesa(gc, df_info, df_despesas):
                 
                 if submitted:
                     if gasto > 0:
+                        # O ID está como string '1', '2', etc.
                         data_list = [obra_id, proxima_semana, data_semana.strftime('%Y-%m-%d'), gasto]
                         insert_new_despesa(gc, data_list)
                     else:
@@ -255,14 +381,9 @@ def show_registro_despesa(gc, df_info, df_despesas):
             if despesas_obra.empty:
                 st.info("Nenhum gasto registrado para esta obra.")
             else:
-                # Formata o DataFrame para exibição
                 despesas_display = despesas_obra.sort_values('Semana_Ref', ascending=False).copy()
                 despesas_display['Gasto_Semana'] = despesas_display['Gasto_Semana'].apply(lambda x: formatar_moeda(x))
                 despesas_display = despesas_display.rename(columns={'Semana_Ref': 'Semana', 'Data_Semana': 'Data Ref.', 'Gasto_Semana': 'Gasto'})
-
-                # ----------------------------------------------------
-                # Menu de Seleção para Edição
-                # ----------------------------------------------------
                 
                 semanas_opcoes = despesas_obra['Semana_Ref'].sort_values(ascending=False).tolist()
                 semana_selecionada = st.selectbox(
@@ -272,12 +393,9 @@ def show_registro_despesa(gc, df_info, df_despesas):
                     key="select_semana_edicao"
                 )
                 
-                # --- DETALHAMENTO E FORMULÁRIO DE EDIÇÃO ---
                 if semana_selecionada:
-                    # Pega a linha da semana selecionada
                     linha_edicao = despesas_obra[despesas_obra['Semana_Ref'] == semana_selecionada].iloc[0]
-                    
-                    # Converte os valores atuais para os tipos de input do Streamlit
+                    # Data lida como string, então precisa de conversão
                     data_atual = datetime.strptime(linha_edicao['Data_Semana'], '%Y-%m-%d').date()
                     gasto_atual = float(linha_edicao['Gasto_Semana'])
 
@@ -286,29 +404,17 @@ def show_registro_despesa(gc, df_info, df_despesas):
                             
                             st.markdown(f"**Editando: Obra {obra_id} - Semana {semana_selecionada}**")
                             
-                            novo_gasto = st.number_input(
-                                "Novo Gasto Total (R$)", 
-                                min_value=0.0, 
-                                value=gasto_atual, 
-                                format="%.2f", 
-                                key="edit_gasto"
-                            )
-                            nova_data = st.date_input(
-                                "Nova Data de Referência", 
-                                value=data_atual, 
-                                key="edit_data"
-                            )
+                            novo_gasto = st.number_input("Novo Gasto Total (R$)", min_value=0.0, value=gasto_atual, format="%.2f", key="edit_gasto")
+                            nova_data = st.date_input("Nova Data de Referência", value=data_atual, key="edit_data")
                             
                             submitted_edit = st.form_submit_button("Salvar Alterações")
                             
                             if submitted_edit:
                                 if novo_gasto >= 0:
-                                    # Chama a função de atualização
                                     update_despesa(gc, obra_id, semana_selecionada, novo_gasto, nova_data)
                                 else:
                                     st.warning("O valor do gasto não pode ser negativo.")
                             
-                    # Exibe a tabela de todos os gastos abaixo do formulário de edição
                     st.markdown("---")
                     st.markdown("**Histórico de Gastos:**")
                     st.dataframe(
@@ -319,23 +425,16 @@ def show_registro_despesa(gc, df_info, df_despesas):
 
 
 def show_consulta_dados(df_info, df_despesas):
-    st.header("3. Status Financeiro das Obras")
+    st.title(PAGINAS_REVERSO["CONSULTA_STATUS"])
     
     if df_info.empty:
         st.info("Nenhuma obra cadastrada para consultar.")
         return
 
-    # 1. Agrega o gasto total por obra de forma segura
     df_final = calcular_status_financeiro(df_info, df_despesas)
     
-    # 4. Formatação para exibição
     df_display = df_final[[
-        'Obra_ID',
-        'Nome_Obra',
-        'Valor_Total_Inicial',
-        'Gasto_Total_Acumulado',
-        'Sobrando_Financeiro',
-        'Data_Inicio'
+        'Obra_ID', 'Nome_Obra', 'Valor_Total_Inicial', 'Gasto_Total_Acumulado', 'Sobrando_Financeiro', 'Data_Inicio'
     ]].copy()
 
     df_display['Valor_Total_Inicial'] = df_display['Valor_Total_Inicial'].apply(formatar_moeda)
@@ -345,36 +444,13 @@ def show_consulta_dados(df_info, df_despesas):
     st.dataframe(df_display, use_container_width=True)
 
 
-def calcular_status_financeiro(df_info, df_despesas):
-    """Função auxiliar para calcular o status financeiro (reutilizada no relatório)"""
-    if not df_despesas.empty and 'Obra_ID' in df_despesas.columns and 'Gasto_Semana' in df_despesas.columns:
-        df_despesas['Gasto_Semana'] = pd.to_numeric(df_despesas['Gasto_Semana'], errors='coerce').fillna(0)
-        
-        try:
-            gastos_totais = df_despesas.groupby('Obra_ID')['Gasto_Semana'].sum().reset_index()
-            gastos_totais.rename(columns={'Gasto_Semana': 'Gasto_Total_Acumulado'}, inplace=True)
-        except Exception as e:
-            gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
-    else:
-        gastos_totais = pd.DataFrame({'Obra_ID': df_info['Obra_ID'].unique(), 'Gasto_Total_Acumulado': 0.0})
-
-    df_final = df_info.merge(gastos_totais, on='Obra_ID', how='left').fillna(0)
-    df_final['Gasto_Total_Acumulado'] = df_final['Gasto_Total_Acumulado'].round(2)
-    df_final['Sobrando_Financeiro'] = df_final['Valor_Total_Inicial'] - df_final['Gasto_Total_Acumulado']
-    
-    return df_final
-
-
-# --- NOVA FUNCIONALIDADE: RELATÓRIO ---
-
-def show_relatorio_obra(df_info, df_despesas):
-    st.header("4. Gerar Relatório Detalhado")
+def show_relatorio_obra(gc, df_info, df_despesas):
+    st.title(PAGINAS_REVERSO["RELATORIO"])
 
     if df_info.empty:
         st.info("Nenhuma obra cadastrada para gerar relatório.")
         return
 
-    # 1. Mapear Obras
     opcoes_obras = {f"{row['Nome_Obra']} ({row['Obra_ID']})": row['Obra_ID']
                     for index, row in df_info.iterrows()}
 
@@ -382,23 +458,18 @@ def show_relatorio_obra(df_info, df_despesas):
 
     if obra_selecionada_str:
         obra_id = opcoes_obras[obra_selecionada_str]
-        
-        # 2. Calcular Status Financeiro Consolidado
         df_status = calcular_status_financeiro(df_info, df_despesas)
         
-        # 3. Filtrar Dados da Obra
         info_obra = df_status[df_status['Obra_ID'] == obra_id].iloc[0]
         despesas_obra = df_despesas[df_despesas['Obra_ID'].astype(str) == str(obra_id)].copy()
         
         st.markdown("---")
         st.subheader(f"Relatório de Acompanhamento: {info_obra['Nome_Obra']}")
         
-        #st.markdown("""
-        #**DICA PARA PDF/IMPRESSÃO:** Use a função de impressão do seu navegador (Ctrl+P ou Cmd+P) e escolha 'Salvar como PDF' para gerar o documento.
-        #""")
+        st.markdown("""
+        **DICA PARA PDF/IMPRESSÃO:** Use a função de impressão do seu navegador (Ctrl+P ou Cmd+P) e escolha 'Salvar como PDF' para gerar o documento.
+        """)
         
-        # --- Seção de Detalhes da Obra ---
-        st.markdown("#### Detalhes Gerais")
         col_det1, col_det2 = st.columns(2)
         
         with col_det1:
@@ -409,31 +480,41 @@ def show_relatorio_obra(df_info, df_despesas):
             st.metric("Orçamento Inicial", formatar_moeda(info_obra['Valor_Total_Inicial']))
             st.metric("Gasto Total Acumulado", formatar_moeda(info_obra['Gasto_Total_Acumulado']))
         
-        # Destaque Final
         st.markdown(f"### **Saldo Restante:** {formatar_moeda(info_obra['Sobrando_Financeiro'])}")
         
         st.markdown("---")
-
-        # --- Seção de Histórico de Despesas ---
         st.markdown("#### Histórico de Despesas Semanais")
         
         if despesas_obra.empty:
             st.info("Nenhum registro de despesa semanal encontrado para esta obra.")
         else:
             despesas_display = despesas_obra.sort_values('Semana_Ref', ascending=True).copy()
-            
-            # Reformatar colunas para o relatório
             despesas_display['Gasto_Semana'] = despesas_display['Gasto_Semana'].apply(formatar_moeda)
             despesas_display['Data_Semana'] = pd.to_datetime(despesas_display['Data_Semana']).dt.strftime('%d/%m/%Y')
             
             df_relatorio = despesas_display[['Semana_Ref', 'Data_Semana', 'Gasto_Semana']].rename(columns={
-                'Semana_Ref': 'Semana',
-                'Data_Semana': 'Data Referência',
-                'Gasto_Semana': 'Gasto da Semana'
+                'Semana_Ref': 'Semana', 'Data_Semana': 'Data Referência', 'Gasto_Semana': 'Gasto da Semana'
             })
 
-            # Exibir como tabela para impressão
             st.dataframe(df_relatorio, use_container_width=True, hide_index=True)
+
+
+# --- Funções de Navegação e Layout ---
+
+def navigate_to(page_key):
+    """Função que altera a página no estado da sessão."""
+    st.session_state.current_page = page_key
+
+def setup_navigation():
+    """Cria os botões de navegação no topo da página."""
+    cols = st.columns(len(PAGINAS))
+    
+    for i, (label, key) in enumerate(PAGINAS.items()):
+        is_active = st.session_state.current_page == key
+        
+        with cols[i]:
+            if st.button(label, on_click=navigate_to, args=(key,), type="primary" if is_active else "secondary", use_container_width=True):
+                pass
 
 
 # --- Aplicação Principal ---
@@ -441,34 +522,40 @@ def show_relatorio_obra(df_info, df_despesas):
 def main():
     st.set_page_config(page_title="Controle Financeiro de Obras", layout="wide")
     st.title("🚧 Sistema de Gerenciamento de Obras")
+    
+    # 1. Inicializar o estado da sessão (se não estiver definido)
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = PAGINAS["1. Cadastrar Nova Obra"]
+    
     st.markdown("---")
     
-    gc = get_gspread_client()
+    # 2. Configurar e mostrar os botões de navegação
+    setup_navigation()
     
-    if not gc:
-        st.stop() # Parar se a autenticação falhar
-        
-    # Recarrega os dados a cada execução/interação (CHAMADO SEM PARÂMETROS)
-    df_info, df_despesas = load_data() 
-    
-    # Layout de colunas para as páginas de ação
-    col_cadastro, col_registro = st.columns(2)
-    
-    with col_cadastro:
-        show_cadastro_obra(gc) # gc é passado para a função de ESCRITA
-        
-    with col_registro:
-        show_registro_despesa(gc, df_info, df_despesas)
-        
     st.markdown("---")
-    show_consulta_dados(df_info, df_despesas)
 
-    st.markdown("---")
-    # NOVA SEÇÃO
-    show_relatorio_obra(df_info, df_despesas) 
+    gc = get_gspread_client()
+    if not gc:
+        st.error("Falha na conexão com o Google Sheets. Verifique a autenticação.")
+        st.stop()
+        
+    df_info, df_despesas = load_data()
+    
+    # 3. Lógica principal para exibir a página correta
+    current_page = st.session_state.current_page
+
+    if current_page == "CADASTRO":
+        show_cadastro_obra(gc, df_info)
+    elif current_page == "REGISTRO_DESPESA":
+        show_registro_despesa(gc, df_info, df_despesas)
+    elif current_page == "CONSULTA_STATUS":
+        show_consulta_dados(df_info, df_despesas)
+    elif current_page == "RELATORIO":
+        show_relatorio_obra(gc, df_info, df_despesas)
 
 if __name__ == "__main__":
     main()
+
 
 
 
