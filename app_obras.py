@@ -341,7 +341,7 @@ def show_registro_despesa(gc, df_info, df_despesas):
     obra_selecionada_str = st.selectbox("Selecione a Obra:", list(opcoes_obras.keys()), key="select_obra_registro")
 
     if obra_selecionada_str:
-        obra_id = opcoes_obcoes[obra_selecionada_str]
+        obra_id = opcoes_obras[obra_selecionada_str]
         
         if df_despesas.empty or 'Obra_ID' not in df_despesas.columns or 'Semana_Ref' not in df_despesas.columns:
             despesas_obra = pd.DataFrame()
@@ -555,6 +555,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
