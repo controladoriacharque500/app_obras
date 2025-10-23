@@ -6,7 +6,7 @@ import json
 from gspread.exceptions import WorksheetNotFound
 
 # --- Configurações da Nova Planilha ---
-PLANILHA_NOME = "Controle_Obras" # O nome da sua nova planilha
+PLANILHA_NOME = "Controle_Obras_testes" # O nome da sua nova planilha
 ABA_INFO = "Obras_Info"
 ABA_DESPESAS = "Despesas_Semanas"
 
@@ -555,6 +555,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
