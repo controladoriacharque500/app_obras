@@ -630,7 +630,7 @@ def show_relatorio_obra(df_info, df_despesas):
             st.metric("ID da Obra", obra_id_display)
             
             data_inicio_obj = info_obra.get('Data_Inicio')
-            data_inicio_str = data_inicio_obj.strftime('%d/%m/%m%Y') if pd.notna(data_inicio_obj) and isinstance(data_inicio_obj, datetime) else "N/A"
+            data_inicio_str = data_inicio_obj.strftime('%d/%m/%Y') if pd.notna(data_inicio_obj) and isinstance(data_inicio_obj, datetime) else "N/A"
             st.metric("Data de Início", data_inicio_str)
             
         with col_det2:
@@ -755,6 +755,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
